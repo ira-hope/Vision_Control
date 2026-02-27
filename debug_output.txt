@@ -1,0 +1,6 @@
+Starting debug script
+Mediapipe version: 0.10.32
+Mediapipe file: C:\Users\pc\Facelocking2\.venv\lib\site-packages\mediapipe\__init__.py
+Dir mediapipe: ['Image', 'ImageFormat', '__builtins__', '__cached__', '__doc__', '__file__', '__loader__', '__name__', '__package__', '__path__', '__spec__', '__version__', 'tasks']
+Failed to import mediapipe.solutions: No module named 'mediapipe.solutions'
+mediapipe.solutions DOES NOT exist
