@@ -181,7 +181,16 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 # Demo
 # -------------------------
 def main():
-    cap = cv2.videoCapture(1)
+    cap = None
+    for _idx in (0, 1, 2):
+        _cap = cv2.VideoCapture(_idx)
+        if _cap.isOpened():
+            cap = _cap
+            print(f"Camera opened on index {_idx}.")
+            break
+        _cap.release()
+    if cap is None:
+        raise RuntimeError("Camera not opened. Tried indices 0, 1, 2.")
 
     det = Haar5ptDetector(
         min_size=(70, 70),

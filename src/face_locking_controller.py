@@ -2,7 +2,7 @@ from .face_tracker import FaceTracker
 from .history_logger import start_history, log_action
 from .actions import detect_horizontal_movement
 
-tracker = FaceTracker(target_name="Nkerabahizi")
+tracker = FaceTracker(target_name="Hope")
 history_file = None
 prev_center = None
 

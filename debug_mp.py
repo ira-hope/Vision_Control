@@ -13,15 +13,22 @@ try:
     log(f"Dir mediapipe: {dir(mediapipe)}")
     
     try:
+        import mediapipe as mp
+        solutions = mp.solutions
+        log(f"Successfully accessed mp.solutions: {solutions}")
+    except Exception as e:
+        log(f"Failed to access mp.solutions via attribute: {e}")
+
+    try:
         import mediapipe.solutions
-        log("Successfully imported mediapipe.solutions")
+        log("Successfully imported mediapipe.solutions directly")
     except ImportError as e:
-        log(f"Failed to import mediapipe.solutions: {e}")
+        log(f"Direct import 'import mediapipe.solutions' failed: {e}")
 
     if hasattr(mediapipe, 'solutions'):
-        log("mediapipe.solutions exists")
+        log("mediapipe.solutions exists as attribute")
     else:
-        log("mediapipe.solutions DOES NOT exist")
+        log("mediapipe.solutions DOES NOT exist as attribute")
 
 except ImportError as e:
     log(f"Failed to import mediapipe: {e}")

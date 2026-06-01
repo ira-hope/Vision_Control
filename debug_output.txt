@@ -4,3 +4,10 @@ Mediapipe file: C:\Users\pc\Facelocking2\.venv\lib\site-packages\mediapipe\__ini
 Dir mediapipe: ['Image', 'ImageFormat', '__builtins__', '__cached__', '__doc__', '__file__', '__loader__', '__name__', '__package__', '__path__', '__spec__', '__version__', 'tasks']
 Failed to import mediapipe.solutions: No module named 'mediapipe.solutions'
 mediapipe.solutions DOES NOT exist
+Starting debug script
+Mediapipe version: 0.10.21
+Mediapipe file: C:\Users\pc\Facelocking2\.venv\lib\site-packages\mediapipe\__init__.py
+Dir mediapipe: ['CalculatorGraph', 'GraphInputStreamAddMode', 'Image', 'ImageFormat', 'ImageFrame', 'Matrix', 'Packet', 'Timestamp', 'ValidatedGraphConfig', '__builtins__', '__cached__', '__doc__', '__file__', '__loader__', '__name__', '__package__', '__path__', '__spec__', '__version__', 'calculators', 'model_ckpt_util', 'packet_creator', 'packet_getter', 'resource_util', 'solutions', 'tasks']
+Successfully accessed mp.solutions: <module 'mediapipe.python.solutions' from 'C:\\Users\\pc\\Facelocking2\\.venv\\lib\\site-packages\\mediapipe\\python\\solutions\\__init__.py'>
+Direct import 'import mediapipe.solutions' failed: No module named 'mediapipe.solutions'
+mediapipe.solutions exists as attribute

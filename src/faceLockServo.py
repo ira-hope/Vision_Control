@@ -435,9 +435,16 @@ def main():
     locker = FaceLocker(choice, db[choice], db)
     
     # Open camera
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("ERROR: Cannot open camera.")
+    cap = None
+    for _idx in (0, 1, 2):
+        _cap = cv2.VideoCapture(_idx)
+        if _cap.isOpened():
+            cap = _cap
+            print(f"Camera opened on index {_idx}.")
+            break
+        _cap.release()
+    if cap is None:
+        print("ERROR: Cannot open camera. Tried indices 0, 1, 2.")
         return False
     
     # Get screen dimensions

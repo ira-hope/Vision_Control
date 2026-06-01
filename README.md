@@ -125,7 +125,7 @@ What this does:
 1. Opens the camera (tries indices 0 → 1 → 2)
 2. Detects all faces each frame using `HaarFaceMesh5pt`
 3. Embeds and matches every face against the DB (`dist_thresh=0.34`)
-4. **Locks onto "Kheira"** (hardcoded target — change `r["name"] == "Kheira"` in `detect.py` to your enrolled name)
+4. **Locks onto "Hope"** (hardcoded target — change `r["name"] == "Hope"` in `detect.py` to your enrolled name)
 5. Tracks the locked face with identity matching + spatial fallback (≤ 50 px keypoint distance)
 6. Releases lock after **2 seconds** of not seeing the target
 7. Runs `ActionDetector` on the locked face — detects head movement (left/right/up/down) and smile
