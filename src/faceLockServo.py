@@ -43,7 +43,10 @@ from src.config import (
     SERVO_DEADZONE_DEG,
     SERVO_INVERTED,
     SERVO_PUBLISH_INTERVAL_MS,
+    SERVO_SEARCH_INTERVAL_MS,
+    SERVO_SEARCH_STEP_DEG,
     SERVO_SMOOTHING_FACTOR,
+    SERVO_TRACK_HEARTBEAT_MS,
     open_camera,
 )
 from src.embed import ArcFaceEmbedderONNX, EmbeddingResult
@@ -195,6 +198,7 @@ class PositionTracker:
         # Rate-limiting: track the last time we published
         self.last_publish_time = 0.0
         self.last_sent_angle = 90.0
+        self.last_heartbeat_time = 0.0
 
     def calculate_angle_from_position(self, face_center_x: float) -> float:
         """Calculate servo angle from face X position on screen.
@@ -215,8 +219,18 @@ class PositionTracker:
             self.position_buffer.pop(0)
         return float(np.mean(self.position_buffer))
 
-    def update(self, face_center_x: Optional[float]) -> Optional[float]:
-        """Smooth the angle and return the value to publish (or None if rate/deadzone suppressed)."""
+    def sync_angle(self, angle: float) -> None:
+        """Seed tracker state after search/re-lock so tracking starts immediately."""
+        angle = float(max(SERVO_ANGLE_MIN, min(SERVO_ANGLE_MAX, angle)))
+        self.current_angle = angle
+        self.last_sent_angle = angle
+        self.position_buffer = [angle]
+        now_ms = time.time() * 1000
+        self.last_publish_time = now_ms
+        self.last_heartbeat_time = now_ms
+
+    def update(self, face_center_x: Optional[float], *, force: bool = False) -> Optional[float]:
+        """Smooth the angle and return the value to publish (or None if suppressed)."""
         if face_center_x is None:
             return None
 
@@ -224,17 +238,66 @@ class PositionTracker:
         # Exponential smoothing toward the target
         self.current_angle += (target_angle - self.current_angle) * SERVO_SMOOTHING_FACTOR
 
-        # --- Dead-zone: skip if we haven't moved enough ---
-        if abs(self.current_angle - self.last_sent_angle) < SERVO_DEADZONE_DEG:
-            return None  # signal: don't publish yet
-
-        # --- Rate-limit: don't publish faster than SERVO_PUBLISH_INTERVAL_MS ---
         now_ms = time.time() * 1000
-        if now_ms - self.last_publish_time < SERVO_PUBLISH_INTERVAL_MS:
+
+        if force:
+            self.last_publish_time = now_ms
+            self.last_heartbeat_time = now_ms
+            self.last_sent_angle = self.current_angle
+            return self.current_angle
+
+        moved_enough = abs(self.current_angle - self.last_sent_angle) >= SERVO_DEADZONE_DEG
+        rate_ok = now_ms - self.last_publish_time >= SERVO_PUBLISH_INTERVAL_MS
+        heartbeat_due = now_ms - self.last_heartbeat_time >= SERVO_TRACK_HEARTBEAT_MS
+
+        if not moved_enough and not heartbeat_due:
+            return None
+        if moved_enough and not rate_ok:
             return None
 
         self.last_publish_time = now_ms
+        self.last_heartbeat_time = now_ms
         self.last_sent_angle = self.current_angle
+        return self.current_angle
+
+
+class ServoSearchController:
+    """Sweep servo while the target is not visible (search mode)."""
+
+    def __init__(
+        self,
+        angle_min: int = SERVO_ANGLE_MIN,
+        angle_max: int = SERVO_ANGLE_MAX,
+        step_deg: int = SERVO_SEARCH_STEP_DEG,
+        interval_ms: int = SERVO_SEARCH_INTERVAL_MS,
+    ):
+        self.angle_min = angle_min
+        self.angle_max = angle_max
+        self.step_deg = step_deg
+        self.interval_ms = interval_ms
+        self.current_angle = 90.0
+        self.direction = 1
+        self.last_publish_time = 0.0
+
+    def sync_from(self, angle: float) -> None:
+        """Align sweep position with the last tracking angle."""
+        self.current_angle = float(max(self.angle_min, min(self.angle_max, angle)))
+
+    def update(self) -> Optional[float]:
+        """Return the next sweep angle to publish, or None if rate-limited."""
+        now_ms = time.time() * 1000
+        if now_ms - self.last_publish_time < self.interval_ms:
+            return None
+
+        self.current_angle += self.step_deg * self.direction
+        if self.current_angle >= self.angle_max:
+            self.current_angle = float(self.angle_max)
+            self.direction = -1
+        elif self.current_angle <= self.angle_min:
+            self.current_angle = float(self.angle_min)
+            self.direction = 1
+
+        self.last_publish_time = now_ms
         return self.current_angle
 
 # -------------------------
@@ -348,6 +411,7 @@ class FaceLocker:
         self.db = db
         
         self.locked = False
+        self.searching = True
         self.fail_count = 0
         self.total_lock_frames = 0
         self.action_detector: Optional[ActionDetector] = None
@@ -369,13 +433,34 @@ class FaceLocker:
             debug=False,
         )
         
-        # Position tracker
+        # Position tracker + search sweep (used when target leaves the frame)
         self.position_tracker = None
+        self.search_controller = ServoSearchController()
         
         print(f"[MQTT] Ready to send servo commands for {target_name}")
 
-    def on_locked(self) -> None:
-        """Record lock event for dashboard + history."""
+    def _publish_servo_angle(self, angle: float) -> None:
+        if angle is not None:
+            self.servo_controller.send_angle(angle)
+
+    def _start_search(self, reason: str = "") -> None:
+        """Enter sweep mode — servo hunts until the target is seen again."""
+        if not self.searching:
+            suffix = f" ({reason})" if reason else ""
+            print(f"[SEARCH] Servo sweeping to find {self.target_name.upper()}{suffix}")
+        self.searching = True
+        if self.position_tracker is not None:
+            self.search_controller.sync_from(self.position_tracker.current_angle)
+
+    def _stop_search(self) -> None:
+        """Leave sweep mode — tracking resumes on the locked person."""
+        if self.searching:
+            print(f"[SEARCH] Target found — servo tracking {self.target_name.upper()}")
+        self.searching = False
+
+    def on_locked(self, face_center_x: Optional[float] = None) -> None:
+        """Record lock event, stop search, and snap servo to the face."""
+        self._stop_search()
         self.action_detector = ActionDetector()
         self.history_manager.log_event(self.target_name, "LOCKED")
         write_lock_state(
@@ -384,10 +469,17 @@ class FaceLocker:
             is_locked=True,
             last_action="LOCKED",
         )
+
+        if self.position_tracker is not None and face_center_x is not None:
+            track_angle = self.position_tracker.update(face_center_x, force=True)
+            if track_angle is not None:
+                self._publish_servo_angle(track_angle)
+                self.search_controller.sync_from(track_angle)
+
         print(f"[LOCKED] Target locked — dashboard updated")
 
     def on_unlocked(self) -> None:
-        """Record unlock event for dashboard + history."""
+        """Record unlock event for dashboard + history and start servo search."""
         self.history_manager.log_event(self.target_name, "UNLOCKED")
         write_lock_state(
             target_name=self.target_name,
@@ -395,7 +487,15 @@ class FaceLocker:
             last_action="UNLOCKED",
         )
         self.action_detector = None
+        self._start_search("target left frame")
         print(f"[LOST] Lost signal on {self.target_name.upper()} — dashboard updated")
+
+    def run_search_sweep(self) -> Optional[float]:
+        """Publish the next sweep angle while searching."""
+        sweep_angle = self.search_controller.update()
+        if sweep_angle is not None:
+            self._publish_servo_angle(sweep_angle)
+        return sweep_angle
 
     def process_locked_actions(self, face_data: Dict[str, Any]) -> List[str]:
         """Detect smile, blink, and head movement on the locked face."""
@@ -464,22 +564,22 @@ class FaceLocker:
         
         return None, 1.0
     
-    def update_position_tracking(self, target_face_data: Optional[Dict]) -> Optional[float]:
-        """Update position tracking and publish servo angle when appropriate.
-
-        Returns the current smoothed angle (for display), or None if no tracker.
-        The angle is only *published* when deadzone and rate-limit allow.
-        """
+    def update_position_tracking(
+        self,
+        target_face_data: Optional[Dict],
+        *,
+        force: bool = False,
+    ) -> Optional[float]:
+        """Update position tracking and publish servo angle when appropriate."""
         if not self.position_tracker or not target_face_data:
             return None
 
-        face_center_x = target_face_data.get('center_x')
-        publish_angle = self.position_tracker.update(face_center_x)
+        face_center_x = target_face_data.get("center_x")
+        publish_angle = self.position_tracker.update(face_center_x, force=force)
 
         if publish_angle is not None:
-            self.servo_controller.send_angle(publish_angle)
+            self._publish_servo_angle(publish_angle)
 
-        # Always return the live smoothed angle for the on-screen display
         return self.position_tracker.current_angle
     
     def close(self):
@@ -578,62 +678,85 @@ def main():
             # servo_angle is used for the on-screen display only
             servo_angle = None
 
+            target_visible = (
+                target_face is not None and target_distance <= DISTANCE_THRESHOLD
+            )
+
             if not locker.locked:
-                # SEARCHING: look for the target face
-                if target_face is not None and target_distance <= DISTANCE_THRESHOLD:
+                # Not locked yet: sweep servo and try to acquire the target
+                servo_angle = locker.run_search_sweep()
+
+                if target_visible:
                     locker.locked = True
                     locker.fail_count = 0
                     locker.total_lock_frames = 0
-                    locker.on_locked()
+                    locker.on_locked(target_face["center_x"])
                     print(
                         f"[LOCKED] Target locked at "
                         f"({int(target_face['center_x'])}, {int(target_face['center_y'])})"
                     )
 
+            elif target_visible:
+                # LOCKED + face in frame: track target, stop any search sweep
+                locker._stop_search()
+                servo_angle = locker.update_position_tracking(target_face)
+                locker.fail_count = 0
+                locker.total_lock_frames += 1
+                face = target_face["face_data"]
+
+                locker.process_locked_actions(face)
+
+                cv2.rectangle(vis, (face["x1"], face["y1"]), (face["x2"], face["y2"]), (0, 255, 0), 2)
+
+                center_x = (face["x1"] + face["x2"]) // 2
+                center_y = (face["y1"] + face["y2"]) // 2
+                cv2.line(vis, (center_x, face["y1"]), (center_x, face["y2"]), (0, 255, 0), 1)
+                cv2.line(vis, (face["x1"], center_y), (face["x2"], center_y), (0, 255, 0), 1)
+
+                label = f"LOCKED: {locker.target_name.upper()}"
+                if time.time() - locker.last_action_time < locker.action_display_duration:
+                    label += f" [{locker.last_action}]"
+
+                cv2.putText(
+                    vis,
+                    label,
+                    (face["x1"], max(0, face["y1"] - 25)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
+
+                if servo_angle is not None:
+                    angle_text = f"Servo: {servo_angle:.1f}°"
+                    cv2.putText(
+                        vis,
+                        angle_text,
+                        (face["x1"], face["y2"] + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 0),
+                        1,
+                    )
+
+                if frames % 10 == 0:
+                    pos_x, pos_y = int(target_face["center_x"]), int(target_face["center_y"])
+                    angle_str = f"{servo_angle:.1f}°" if servo_angle is not None else "N/A"
+                    print(
+                        f"[TRACKING] {locker.target_name.upper()} | "
+                        f"Pos: ({pos_x},{pos_y}) | Angle: {angle_str}"
+                    )
+
             else:
-                # LOCKED: track target, drive servo, log actions for dashboard
-                if target_face is not None and target_distance <= DISTANCE_THRESHOLD:
-                    servo_angle = locker.update_position_tracking(target_face)
+                # LOCKED but face left frame: sweep immediately, unlock after grace period
+                locker._start_search("target out of frame")
+                servo_angle = locker.run_search_sweep()
+                locker.fail_count += 1
+
+                if locker.fail_count >= LOCK_RELEASE_FRAMES:
+                    locker.locked = False
                     locker.fail_count = 0
-                    locker.total_lock_frames += 1
-                    face = target_face['face_data']
-
-                    locker.process_locked_actions(face)
-                    
-                    # Draw locked face
-                    cv2.rectangle(vis, (face['x1'], face['y1']), (face['x2'], face['y2']), (0, 255, 0), 2)
-                    
-                    # Draw crosshair
-                    center_x = (face['x1'] + face['x2']) // 2
-                    center_y = (face['y1'] + face['y2']) // 2
-                    cv2.line(vis, (center_x, face['y1']), (center_x, face['y2']), (0, 255, 0), 1)
-                    cv2.line(vis, (face['x1'], center_y), (face['x2'], center_y), (0, 255, 0), 1)
-                    
-                    label = f"LOCKED: {locker.target_name.upper()}"
-                    if time.time() - locker.last_action_time < locker.action_display_duration:
-                        label += f" [{locker.last_action}]"
-
-                    cv2.putText(vis, label, 
-                               (face['x1'], max(0, face['y1'] - 25)),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    
-                    if servo_angle is not None:
-                        angle_text = f"Servo: {servo_angle:.1f}°"
-                        cv2.putText(vis, angle_text, 
-                                   (face['x1'], face['y2'] + 20),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                    
-                    # Terminal output
-                    if frames % 10 == 0:
-                        pos_x, pos_y = int(target_face['center_x']), int(target_face['center_y'])
-                        angle_str = f"{servo_angle:.1f}°" if servo_angle is not None else "N/A"
-                        print(f"[SCANNING] {locker.target_name.upper()} | Pos: ({pos_x},{pos_y}) | Angle: {angle_str}")
-                else:
-                    locker.fail_count += 1
-                    if locker.fail_count >= LOCK_RELEASE_FRAMES:
-                        locker.locked = False
-                        locker.fail_count = 0
-                        locker.on_unlocked()
+                    locker.on_unlocked()
             
             # Draw other faces
             for face_data, identity, similarity in recognized_faces:
@@ -657,9 +780,17 @@ def main():
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
             # Draw status
-            locked_status = "LOCKED" if locker.locked else "Searching..."
+            if locker.locked and not locker.searching:
+                locked_status = "LOCKED"
+            elif locker.searching:
+                locked_status = "Searching (servo sweep)..."
+            else:
+                locked_status = "Searching..."
             if servo_angle is not None:
-                status = f"Target: {locker.target_name} | {locked_status} | Angle: {servo_angle:.1f}° | FPS: {fps:.1f}"
+                status = (
+                    f"Target: {locker.target_name} | {locked_status} | "
+                    f"Angle: {servo_angle:.1f}° | FPS: {fps:.1f}"
+                )
             else:
                 status = f"Target: {locker.target_name} | {locked_status} | FPS: {fps:.1f}"
             cv2.putText(vis, status, (10, 30), 

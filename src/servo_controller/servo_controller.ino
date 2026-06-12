@@ -1,11 +1,12 @@
-/*
+ /*
  * ESP8266 MQTT Servo Controller for Face Locking project
  *
  * Subscribes to MQTT topic (see topic_servo_angle below) and moves a servo
  * on pin D1 to the received angle (0-180 degrees).
  *
- * Search mode: if no MQTT message for SEARCH_TIMEOUT ms, servo sweeps back
- * and forth automatically until tracking resumes.
+ * Search mode (firmware fallback): if no MQTT message for SEARCH_TIMEOUT ms,
+ * servo sweeps until faceLockServo.py resumes sending angles. While running,
+ * Python normally drives search itself when the target leaves the frame.
  *
  * Flash with Arduino IDE + ESP8266 board support.
  * Libraries: ESP8266WiFi, PubSubClient, Servo
