@@ -1,17 +1,14 @@
-# src/haar_5pt.py
 """
-Haar face detection + practical 5-point landmarks (MediaPipe FaceMesh).
+Haar face detection + MediaPipe FaceMesh 5-point landmarks.
 
-Why this works for you:
-- Haar is fast and robust on CPU.
-- MediaPipe FaceMesh confirms a real face and gives stable landmarks.
-- We extract ONLY 5 keypoints:
-  left_eye, right_eye, nose_tip, mouth_left, mouth_right
-- We rebuild bbox from keypoints (centered), so no "aside" offset.
-- We reject Haar false positives if FaceMesh doesn't produce landmarks.
+Keypoints (FaceMesh indices): L_eye(33), R_eye(263), nose(1), L_mouth(61), R_mouth(291)
 
-Run:
-python -m src.haar_5pt
+Classes:
+  Haar5ptDetector   — single largest face, EMA-smoothed (used by enroll, embed, align)
+  HaarFaceMesh5pt   — multi-face, one mesh per Haar ROI (used by detect, recognize)
+  align_face_5pt()  — warp to ArcFace 112x112 template
+
+Run demo:  python -m src.haar_5pt
 """
 
 from __future__ import annotations
@@ -33,6 +30,7 @@ except Exception as e:
 # -------------------------
 @dataclass
 class FaceKpsBox:
+    """One detected face: axis-aligned box, score, and 5 landmark points (5,2)."""
     x1: int
     y1: int
     x2: int
@@ -170,6 +168,12 @@ def _kps_span_ok(kps: np.ndarray, min_eye_dist: float = 12.0) -> bool:
 # Detector
 # -------------------------
 class Haar5ptDetector:
+    """
+    Single-face detector with temporal smoothing (EMA on box and keypoints).
+
+    Best for enrollment and demos where only one person is in frame.
+  """
+
     def __init__(
         self,
         haar_xml: Optional[str] = None,
@@ -191,7 +195,7 @@ class Haar5ptDetector:
         if mp is None:
             raise RuntimeError(
                 f"mediapipe import failed: {_MP_IMPORT_ERROR}\n"
-                f"Install: pip install mediapipe==0.10.21"
+                f"Install: pip install mediapipe==0.10.9"
             )
 
         self.mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
@@ -306,20 +310,83 @@ class Haar5ptDetector:
         ][:max_faces]
 
 
+# Alias used by detect.py / recognize.py (same fields as FaceKpsBox)
+FaceDet = FaceKpsBox
+
+
+class HaarFaceMesh5pt:
+    """
+    Multi-face detector: Haar finds candidates, FaceMesh runs per ROI.
+
+    Returns up to max_faces FaceKpsBox instances per frame.
+    Used by detect.py and recognize.py for simultaneous multi-person scenes.
+    """
+
+    def __init__(
+        self,
+        min_size: Tuple[int, int] = (70, 70),
+        debug: bool = False,
+    ):
+        if mp is None:
+            raise RuntimeError(_MP_IMPORT_ERROR)
+
+        self.debug = debug
+        self.face_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+        )
+        self.mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
+        self.min_size = min_size
+        self.idxs = [33, 263, 1, 61, 291]
+
+    def detect(self, frame: np.ndarray, max_faces: int = 5) -> List[FaceKpsBox]:
+        H, W = frame.shape[:2]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = self.face_cascade.detectMultiScale(
+            gray, scaleFactor=1.1, minNeighbors=5, minSize=self.min_size
+        )
+
+        out: List[FaceKpsBox] = []
+        for (x, y, w, h) in faces[:max_faces]:
+            roi = frame[y : y + h, x : x + w]
+            rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+            res = self.mesh.process(rgb)
+            if not res.multi_face_landmarks:
+                continue
+
+            lm = res.multi_face_landmarks[0].landmark
+            kps = np.array(
+                [[lm[i].x * w + x, lm[i].y * h + y] for i in self.idxs],
+                dtype=np.float32,
+            )
+
+            if not _kps_span_ok(kps, max(10.0, 0.18 * w)):
+                continue
+
+            bb = _bbox_from_5pt(kps)
+            bb = _clip_box_xyxy(bb, W, H)
+            x1, y1, x2, y2 = (int(round(v)) for v in bb.tolist())
+
+            out.append(FaceKpsBox(x1, y1, x2, y2, 1.0, kps))
+
+        return out
+
+
 # -------------------------
 # Demo
 # -------------------------
 def main():
-    cap = None
-    for _idx in (0, 1, 2):
-        _cap = cv2.VideoCapture(_idx)
-        if _cap.isOpened():
-            cap = _cap
-            print(f"Camera opened on index {_idx}.")
-            break
-        _cap.release()
-    if cap is None:
-        print("Error: could not open camera on indices 0, 1, or 2.")
+    from .config import open_camera
+
+    try:
+        cap = open_camera()
+    except RuntimeError as e:
+        print(f"Error: {e}")
         return
     det = Haar5ptDetector(min_size=(70, 70), smooth_alpha=0.80, debug=True)
 

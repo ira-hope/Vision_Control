@@ -1,13 +1,20 @@
 from pathlib import Path
 
-# Canonical project structure
+# Canonical project structure (relative to project root)
 structure = {
     "data/enroll": [],
     "data/db": [],
+    "data/history": [],
+    "dashboard": [
+        "index.html",
+    ],
+    "data/debug_aligned": [],
     "models": [
         "embedder_arcface.onnx",
     ],
     "src": [
+        "__init__.py",
+        "config.py",
         "camera.py",
         "detect.py",
         "landmarks.py",
@@ -17,6 +24,9 @@ structure = {
         "recognize.py",
         "evaluate.py",
         "haar_5pt.py",
+        "faceLockServo.py",
+        "action_detector.py",
+        "history_manager.py",
     ],
     "book": [],
 }
@@ -30,4 +40,4 @@ for folder, files in structure.items():
         if not file_path.exists():
             file_path.touch()
 
-print("face-recognition-5pt project structure created successfully.")
+print("Face locking project structure verified.")

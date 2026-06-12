@@ -1,19 +1,12 @@
-# src/embed.py
 """
-Embedding stage (ArcFace ONNX) using your working pipeline:
-camera
--> Haar detection
--> FaceMesh 5pt
--> align_face_5pt (112x112)
--> ArcFace embedding
--> vector visualization (education)
+ArcFace embedding demo with heatmap visualization.
 
-Run:
-python -m src.embed
+Pipeline: camera -> Haar5ptDetector -> align 112x112 -> ONNX embedder
 
-Keys:
-q : quit
-p : print embedding stats to terminal
+Defines ArcFaceEmbedderONNX (canonical embedder used by enroll, detect, etc.)
+
+Run:  python -m src.embed
+Keys: q quit | p print embedding stats in terminal
 """
 
 from __future__ import annotations
@@ -25,6 +18,7 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+from .config import ALIGN_SIZE, MODEL_PATH, open_camera
 from .haar_5pt import Haar5ptDetector, align_face_5pt
 
 
@@ -50,8 +44,8 @@ class ArcFaceEmbedderONNX:
 
     def __init__(
         self,
-        model_path: str = "models/embedder_arcface.onnx",
-        input_size: Tuple[int, int] = (112, 112),
+        model_path: str = str(MODEL_PATH),
+        input_size: Tuple[int, int] = ALIGN_SIZE,
         debug: bool = False,
     ):
         self.in_w, self.in_h = input_size
@@ -181,16 +175,7 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 # Demo
 # -------------------------
 def main():
-    cap = None
-    for _idx in (0, 1, 2):
-        _cap = cv2.VideoCapture(_idx)
-        if _cap.isOpened():
-            cap = _cap
-            print(f"Camera opened on index {_idx}.")
-            break
-        _cap.release()
-    if cap is None:
-        raise RuntimeError("Camera not opened. Tried indices 0, 1, 2.")
+    cap = open_camera()
 
     det = Haar5ptDetector(
         min_size=(70, 70),
@@ -198,10 +183,7 @@ def main():
         debug=False,
     )
 
-    emb_model = ArcFaceEmbedderONNX(
-        model_path="models/embedder_arcface.onnx",
-        debug=False,
-    )
+    emb_model = ArcFaceEmbedderONNX(debug=False)
 
     prev_emb: Optional[np.ndarray] = None
 

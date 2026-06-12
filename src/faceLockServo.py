@@ -1,10 +1,23 @@
 """
-Enhanced Face Locking module with MQTT servo control
+Face locking with MQTT servo control.
+
+Locks onto an enrolled identity and publishes horizontal servo angles (0-180)
+to an ESP8266 via MQTT. Uses full MediaPipe FaceMesh (468 landmarks) for
+detection in this mode (different from detect.py which uses HaarFaceMesh5pt).
+
+Also logs LOCKED, movements, smile, and blink to history_log.jsonl and
+lock_state.json (same as detect.py) for the HTML dashboard.
+
+Run:  python -m src.faceLockServo
+      python -m src.dashboard   # second terminal — live event view
+Quit: q
+
+MQTT topic / broker: see src/config.py
+Firmware: src/servo_controller/servo_controller.ino
 """
 import sys
 import time
 import json
-from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, List, Tuple, Any
 import cv2
@@ -12,48 +25,42 @@ import numpy as np
 import mediapipe as mp
 import paho.mqtt.client as mqtt
 
+from src.action_detector import ActionDetector
+from src.config import (
+    DB_PATH,
+    DISTANCE_THRESHOLD,
+    LOCK_RELEASE_FRAMES,
+    MATCH_MARGIN,
+    MIN_DETECTION_CONFIDENCE,
+    MIN_RECOGNITION_SIMILARITY,
+    MIN_TRACKING_CONFIDENCE,
+    MODEL_PATH,
+    MQTT_BROKER,
+    MQTT_PORT,
+    MQTT_TOPIC_SERVO_ANGLE,
+    SERVO_ANGLE_MAX,
+    SERVO_ANGLE_MIN,
+    SERVO_DEADZONE_DEG,
+    SERVO_INVERTED,
+    SERVO_PUBLISH_INTERVAL_MS,
+    SERVO_SMOOTHING_FACTOR,
+    open_camera,
+)
 from src.embed import ArcFaceEmbedderONNX, EmbeddingResult
+from src.history_manager import HistoryManager
+from src.lock_state import write_lock_state
 
-# -------------------------
-# Configuration
-# -------------------------
-
-DB_PATH = Path(__file__).parent.parent / "data/db/face_db.npz"
-HISTORY_DIR = Path(__file__).parent.parent / "data/history"
-DISTANCE_THRESHOLD = 0.35
-LOCK_RELEASE_FRAMES = 30
-
-# MQTT Configuration
-MQTT_BROKER = "157.173.101.159"  # Change to your MQTT broker IP
-MQTT_PORT = 1883
-MQTT_TOPIC_SERVO_ANGLE = "TeAmSiX/facelocking/servo_ctrl_x9z"
-
-# MediaPipe settings
-MIN_DETECTION_CONFIDENCE = 0.5
-MIN_TRACKING_CONFIDENCE = 0.5
-
-# Eye landmarks indices
+# MediaPipe FaceMesh landmark indices (full 468-point mesh)
 LEFT_EYE_INDICES = [33, 160, 158, 133, 153, 144] 
 RIGHT_EYE_INDICES = [362, 385, 387, 263, 373, 380]
 MOUTH_INDICES = [61, 291, 0, 17]
 
-# Alignment indices
+# 5-point subset used for ArcFace alignment before embedding
 LEFT_EYE_CENTER_IDX = 33
 RIGHT_EYE_CENTER_IDX = 263
 NOSE_IDX = 1
 MOUTH_LEFT_IDX = 61
 MOUTH_RIGHT_IDX = 291
-
-# Servo Configuration
-SERVO_ANGLE_MIN = 0
-SERVO_ANGLE_MAX = 180
-SERVO_SMOOTHING_FACTOR = 0.3
-# Set True if servo moves in the WRONG direction (e.g. face left → motor goes right)
-SERVO_INVERTED = False
-# Don't publish if new angle is within this many degrees of the last sent angle (reduces jitter)
-SERVO_DEADZONE_DEG = 5
-# Minimum time (milliseconds) between MQTT publishes — keeps Arduino loop() responsive
-SERVO_PUBLISH_INTERVAL_MS = 100
 
 # -------------------------
 # MQTT Controller
@@ -152,13 +159,25 @@ def recognize_face(embedding: np.ndarray, db: Dict[str, np.ndarray], threshold: 
     """Recognize a face by comparing embedding with database."""
     best_name = "Unknown"
     best_similarity = 0.0
-    
+    second_similarity = 0.0
+
     for name, ref_emb in db.items():
         similarity = cosine_similarity(embedding, ref_emb)
-        if similarity > best_similarity and similarity >= (1.0 - threshold):
+        if similarity > best_similarity:
+            second_similarity = best_similarity
             best_similarity = similarity
             best_name = name
-    
+        elif similarity > second_similarity:
+            second_similarity = similarity
+
+    margin = best_similarity - second_similarity
+    accepted = (
+        best_similarity >= (1.0 - threshold)
+        or best_similarity >= MIN_RECOGNITION_SIMILARITY
+        or (margin >= MATCH_MARGIN and best_similarity >= MIN_RECOGNITION_SIMILARITY - 0.05)
+    )
+    if not accepted:
+        return "Unknown", best_similarity
     return best_name, best_similarity
 
 # -------------------------
@@ -302,6 +321,20 @@ def align_face_mediapipe(frame: np.ndarray, landmarks: np.ndarray, out_size: Tup
     aligned_face = cv2.warpAffine(frame, transform, out_size, borderValue=0.0)
     return aligned_face
 
+
+def landmarks_to_5pt(landmarks: np.ndarray) -> np.ndarray:
+    """Extract ArcFace-style 5-point keypoints from MediaPipe landmarks."""
+    return np.array(
+        [
+            landmarks[LEFT_EYE_CENTER_IDX][:2],
+            landmarks[RIGHT_EYE_CENTER_IDX][:2],
+            landmarks[NOSE_IDX][:2],
+            landmarks[MOUTH_LEFT_IDX][:2],
+            landmarks[MOUTH_RIGHT_IDX][:2],
+        ],
+        dtype=np.float32,
+    )
+
 # -------------------------
 # Face Locker
 # -------------------------
@@ -317,6 +350,13 @@ class FaceLocker:
         self.locked = False
         self.fail_count = 0
         self.total_lock_frames = 0
+        self.action_detector: Optional[ActionDetector] = None
+        self.history_manager = HistoryManager()
+        self.last_action = ""
+        self.last_action_time = 0.0
+        self.action_display_duration = 1.0
+
+        write_lock_state(target_name=target_name, is_locked=False)
         
         # Initialize MQTT servo controller
         self.servo_controller = MQTTServoController()
@@ -325,7 +365,7 @@ class FaceLocker:
         # MediaPipe detector and embedder
         self.detector = MediaPipeFaceDetector(min_size=(50, 50))
         self.embedder = ArcFaceEmbedderONNX(
-            model_path=str(Path(__file__).parent.parent / "models/embedder_arcface.onnx"),
+            model_path=str(MODEL_PATH),
             debug=False,
         )
         
@@ -333,6 +373,56 @@ class FaceLocker:
         self.position_tracker = None
         
         print(f"[MQTT] Ready to send servo commands for {target_name}")
+
+    def on_locked(self) -> None:
+        """Record lock event for dashboard + history."""
+        self.action_detector = ActionDetector()
+        self.history_manager.log_event(self.target_name, "LOCKED")
+        write_lock_state(
+            target_name=self.target_name,
+            locked_name=self.target_name,
+            is_locked=True,
+            last_action="LOCKED",
+        )
+        print(f"[LOCKED] Target locked — dashboard updated")
+
+    def on_unlocked(self) -> None:
+        """Record unlock event for dashboard + history."""
+        self.history_manager.log_event(self.target_name, "UNLOCKED")
+        write_lock_state(
+            target_name=self.target_name,
+            is_locked=False,
+            last_action="UNLOCKED",
+        )
+        self.action_detector = None
+        print(f"[LOST] Lost signal on {self.target_name.upper()} — dashboard updated")
+
+    def process_locked_actions(self, face_data: Dict[str, Any]) -> List[str]:
+        """Detect smile, blink, and head movement on the locked face."""
+        if self.action_detector is None:
+            self.action_detector = ActionDetector()
+
+        landmarks = face_data["landmarks"]
+        kps = landmarks_to_5pt(landmarks)
+        bbox = np.array(
+            [face_data["x1"], face_data["y1"], face_data["x2"], face_data["y2"]],
+            dtype=np.float32,
+        )
+        actions = self.action_detector.update(kps, bbox)
+
+        for act in actions:
+            self.history_manager.log_event(self.target_name, act)
+            write_lock_state(
+                target_name=self.target_name,
+                locked_name=self.target_name,
+                is_locked=True,
+                last_action=act,
+            )
+            self.last_action = act
+            self.last_action_time = time.time()
+            print(f"[event] {self.target_name}: {act}")
+
+        return actions
     
     def set_screen_size(self, width: int):
         """Initialize position tracker with screen width."""
@@ -434,17 +524,10 @@ def main():
     # Initialize face locker
     locker = FaceLocker(choice, db[choice], db)
     
-    # Open camera
-    cap = None
-    for _idx in (0, 1, 2):
-        _cap = cv2.VideoCapture(_idx)
-        if _cap.isOpened():
-            cap = _cap
-            print(f"Camera opened on index {_idx}.")
-            break
-        _cap.release()
-    if cap is None:
-        print("ERROR: Cannot open camera. Tried indices 0, 1, 2.")
+    try:
+        cap = open_camera()
+    except RuntimeError as e:
+        print(f"ERROR: {e}")
         return False
     
     # Get screen dimensions
@@ -458,6 +541,7 @@ def main():
     print(f"Screen: {width}x{height}")
     print(f"Servo Range: {SERVO_ANGLE_MIN}° to {SERVO_ANGLE_MAX}°")
     print(f"MQTT Topic: {MQTT_TOPIC_SERVO_ANGLE}")
+    print(f"Dashboard: run python -m src.dashboard (logs movements, smile, blink)")
     print(f"Press 'q' to quit")
     print("="*50 + "\n")
     
@@ -500,16 +584,21 @@ def main():
                     locker.locked = True
                     locker.fail_count = 0
                     locker.total_lock_frames = 0
-                    print(f"[LOCKED] Target locked at ({int(target_face['center_x'])}, {int(target_face['center_y'])})")
+                    locker.on_locked()
+                    print(
+                        f"[LOCKED] Target locked at "
+                        f"({int(target_face['center_x'])}, {int(target_face['center_y'])})"
+                    )
 
             else:
-                # LOCKED: track target and drive servo
+                # LOCKED: track target, drive servo, log actions for dashboard
                 if target_face is not None and target_distance <= DISTANCE_THRESHOLD:
-                    # ✅ Only send servo commands when actually locked
                     servo_angle = locker.update_position_tracking(target_face)
                     locker.fail_count = 0
                     locker.total_lock_frames += 1
                     face = target_face['face_data']
+
+                    locker.process_locked_actions(face)
                     
                     # Draw locked face
                     cv2.rectangle(vis, (face['x1'], face['y1']), (face['x2'], face['y2']), (0, 255, 0), 2)
@@ -520,12 +609,15 @@ def main():
                     cv2.line(vis, (center_x, face['y1']), (center_x, face['y2']), (0, 255, 0), 1)
                     cv2.line(vis, (face['x1'], center_y), (face['x2'], center_y), (0, 255, 0), 1)
                     
-                    # Show info
-                    cv2.putText(vis, f"LOCKED: {locker.target_name.upper()}", 
+                    label = f"LOCKED: {locker.target_name.upper()}"
+                    if time.time() - locker.last_action_time < locker.action_display_duration:
+                        label += f" [{locker.last_action}]"
+
+                    cv2.putText(vis, label, 
                                (face['x1'], max(0, face['y1'] - 25)),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
-                    if servo_angle:
+                    if servo_angle is not None:
                         angle_text = f"Servo: {servo_angle:.1f}°"
                         cv2.putText(vis, angle_text, 
                                    (face['x1'], face['y2'] + 20),
@@ -534,15 +626,14 @@ def main():
                     # Terminal output
                     if frames % 10 == 0:
                         pos_x, pos_y = int(target_face['center_x']), int(target_face['center_y'])
-                        angle_str = f"{servo_angle:.1f}°" if servo_angle else "N/A"
+                        angle_str = f"{servo_angle:.1f}°" if servo_angle is not None else "N/A"
                         print(f"[SCANNING] {locker.target_name.upper()} | Pos: ({pos_x},{pos_y}) | Angle: {angle_str}")
                 else:
-                    # Lost target
                     locker.fail_count += 1
                     if locker.fail_count >= LOCK_RELEASE_FRAMES:
                         locker.locked = False
                         locker.fail_count = 0
-                        print(f"[LOST] Lost signal on {locker.target_name.upper()}")
+                        locker.on_unlocked()
             
             # Draw other faces
             for face_data, identity, similarity in recognized_faces:
@@ -567,7 +658,7 @@ def main():
             
             # Draw status
             locked_status = "LOCKED" if locker.locked else "Searching..."
-            if servo_angle:
+            if servo_angle is not None:
                 status = f"Target: {locker.target_name} | {locked_status} | Angle: {servo_angle:.1f}° | FPS: {fps:.1f}"
             else:
                 status = f"Target: {locker.target_name} | {locked_status} | FPS: {fps:.1f}"

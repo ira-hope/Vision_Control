@@ -1,15 +1,12 @@
-# src/evaluate.py
 """
-evaluate.py
-Threshold tuning / evaluation using enrollment crops (aligned 112x112).
+Recognition threshold tuning from enrolled crop images.
 
-Assumptions:
-- Enrollment crops exist under: data/enroll/<name>/*.jpg
-- Crops are aligned (112x112) already
-- Uses ArcFaceEmbedderONNX from embed.py
+Compares genuine (same person) vs impostor (different person) cosine distances
+and suggests a dist_thresh that meets a target false-accept rate (FAR).
 
-Run:
-python -m src.evaluate
+Requires: data/enroll/<name>/*.jpg (at least 5 per person)
+
+Run:  python -m src.evaluate
 """
 
 from __future__ import annotations
@@ -20,6 +17,7 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 
+from .config import ALIGN_SIZE, ENROLL_DIR
 from .embed import ArcFaceEmbedderONNX
 
 
@@ -28,12 +26,12 @@ from .embed import ArcFaceEmbedderONNX
 # -------------------------
 @dataclass
 class EvalConfig:
-    enroll_dir: Path = Path("data/enroll")
+    enroll_dir: Path = ENROLL_DIR
     min_imgs_per_person: int = 5
     max_imgs_per_person: int = 80
     target_far: float = 0.01  # 1% FAR
     thresholds: Tuple[float, float, float] = (0.10, 1.20, 0.01)
-    require_size: Tuple[int, int] = (112, 112)
+    require_size: Tuple[int, int] = ALIGN_SIZE
 
 
 # -------------------------
@@ -141,11 +139,7 @@ def describe(arr: np.ndarray) -> str:
 def main():
     cfg = EvalConfig()
 
-    embedder = ArcFaceEmbedderONNX(
-        model_path="models/embedder_arcface.onnx",
-        input_size=(112, 112),
-        debug=False,
-    )
+    embedder = ArcFaceEmbedderONNX(debug=False)
 
     people_dirs = list_people(cfg)
     if not people_dirs:
@@ -218,7 +212,7 @@ def main():
         )
 
         sim_thr = 1.0 - thr
-        print(f"(Equivalent cosine similarity threshold ≈ {sim_thr:.3f})")
+        print(f"(Equivalent cosine similarity threshold ~ {sim_thr:.3f})")
     else:
         print(
             f"\nNo threshold met FAR ≤ {cfg.target_far*100:.1f}%. "

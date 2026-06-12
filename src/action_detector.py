@@ -1,83 +1,124 @@
+"""
+Action detection on the locked face using 5-point landmarks.
+
+Detects:
+  - Head movement (left/right/up/down) from bbox centre displacement
+  - Smile from mouth-width / face-width ratio crossing a threshold
+  - Blink from eye-to-nose distance dropping then recovering (5pt proxy)
+
+Used by: detect.py, recognize.py (demo)
+"""
+
+from __future__ import annotations
+
+import time
+
 import numpy as np
 
+from .config import (
+    ACTION_BLINK_DROP_RATIO,
+    ACTION_COOLDOWN_S,
+    ACTION_MOVE_THRESHOLD_PX,
+    ACTION_SMILE_RATIO,
+)
+
+
 class ActionDetector:
+    """Stateful per-face action detector (call update() each frame)."""
+
     def __init__(self):
-        self.prev_kps = None
         self.prev_center = None
-        self.prev_eye_open = None
         self.prev_mouth_open = None
-        
-        # Thresholds
-        self.move_thr = 15.0
-        self.eye_closed_thr = 0.015  # Based on 5pt alignment relative measures if avail, 
-                                     # but here we use simple 5pt geometry approximations
-        self.smile_thr = 0.40        # Mouth width / Face width
+        self._eye_baseline: float | None = None
+        self._blink_armed = False
+        self._last_action_time: dict[str, float] = {}
+
+        self.move_thr = ACTION_MOVE_THRESHOLD_PX
+        self.smile_thr = ACTION_SMILE_RATIO
+        self.blink_drop_ratio = ACTION_BLINK_DROP_RATIO
+        self.cooldown_s = ACTION_COOLDOWN_S
+
+    def _cooldown_ok(self, action: str, now: float) -> bool:
+        last = self._last_action_time.get(action, 0.0)
+        if now - last < self.cooldown_s:
+            return False
+        self._last_action_time[action] = now
+        return True
 
     def update(self, kps: np.ndarray, bbox: np.ndarray) -> list[str]:
         """
-        kps: (5, 2) landmarks [left_eye, right_eye, nose, left_mouth, right_mouth]
-        bbox: [x1, y1, x2, y2]
-        Returns: list of detected action strings e.g. ["blink", "moved left"]
+        Process one frame for the locked face.
+
+        Args:
+            kps:  (5, 2) landmarks [L_eye, R_eye, nose, L_mouth, R_mouth]
+            bbox: [x1, y1, x2, y2]
+
+        Returns:
+            List of action strings, e.g. ["moved left"], ["smile"], ["blink"]
         """
-        actions = []
-        
-        # 1. Movement
+        actions: list[str] = []
+        now = time.time()
+        k = kps.astype(np.float32)
+
         cx = (bbox[0] + bbox[2]) / 2.0
         cy = (bbox[1] + bbox[3]) / 2.0
         curr_center = (cx, cy)
-        
+
         if self.prev_center is not None:
             dx = cx - self.prev_center[0]
             dy = cy - self.prev_center[1]
-            
-            dirs = []
-            if dx > self.move_thr: dirs.append("right")
-            elif dx < -self.move_thr: dirs.append("left")
-            
-            if dy > self.move_thr: dirs.append("down")
-            elif dy < -self.move_thr: dirs.append("up")
-            
+
+            dirs: list[str] = []
+            if dx > self.move_thr:
+                dirs.append("right")
+            elif dx < -self.move_thr:
+                dirs.append("left")
+
+            if dy > self.move_thr:
+                dirs.append("down")
+            elif dy < -self.move_thr:
+                dirs.append("up")
+
             if dirs:
-                actions.append("moved " + "/".join(dirs))
-        
+                action = "moved " + "/".join(dirs)
+                if self._cooldown_ok(action, now):
+                    actions.append(action)
+
         self.prev_center = curr_center
 
-        # Geometry helpers
-        # kps order: 0:L_eye, 1:R_eye, 2:Nose, 3:L_mouth, 4:R_mouth
-        k = kps.astype(np.float32)
-        
-        # 2. Blink (crude approximation from 5 points is hard, usually need 68 or specific eye contour)
-        # However, we can track vertical distance if available, BUT with only center points (pupils),
-        # blink detection is NOT reliable. 
-        # The user's previous code had `eye_open` attribute, likely from `detect.py` logic which was 
-        # trying to read attributes that didn't exist in `FaceDet`.
-        # Real blink detection needs full mesh or specific landmarks.
-        # Since we use `HaarFaceMesh5pt` which uses MediaPipe FaceMesh, we DO have access to full mesh *internally*,
-        # but `detect` only returns 5 points.
-        
-        # For now, we will assume we can't reliably detect blink from just these 5 points 
-        # unless we change `haar_5pt.py` to return more data (like EAR).
-        # Let's check `haar_5pt.py` again. It returns `kps` (5,2).
-        
-        # Wait, the user's previous `detect.py` code had:
-        # eye_open = getattr(focus_face, "eye_open", 0.0)
-        # This confirms it wasn't working before because `FaceDet` didn't have `eye_open`.
-        
-        # For this task, I will stick to what's possible with 5 points or movement provided.
-        # We can detect Smile from 5 points (Mouth width).
-        
-        # 3. Smile
-        # Mouth Width / Face Width
-        face_width = bbox[2] - bbox[0]
-        mouth_width = np.linalg.norm(k[4] - k[3]) # L_mouth to R_mouth
-        
-        ratio = mouth_width / max(1.0, face_width)
-        
+        face_width = max(1.0, float(bbox[2] - bbox[0]))
+        face_height = max(1.0, float(bbox[3] - bbox[1]))
+        mouth_width = float(np.linalg.norm(k[4] - k[3]))
+        ratio = mouth_width / face_width
+
         if self.prev_mouth_open is not None:
-            # Simple hysteresis or just threshold crossing
-            if self.prev_mouth_open < self.smile_thr and ratio >= self.smile_thr:
+            if (
+                self.prev_mouth_open < self.smile_thr
+                and ratio >= self.smile_thr
+                and self._cooldown_ok("smile", now)
+            ):
                 actions.append("smile")
-                
+
         self.prev_mouth_open = ratio
-        
+
+        left_en = float(np.linalg.norm(k[0] - k[2]))
+        right_en = float(np.linalg.norm(k[1] - k[2]))
+        eye_open = (left_en + right_en) * 0.5 / face_height
+
+        if self._eye_baseline is None:
+            self._eye_baseline = eye_open
+        else:
+            if not self._blink_armed:
+                self._eye_baseline = 0.92 * self._eye_baseline + 0.08 * eye_open
+
+            drop = (self._eye_baseline - eye_open) / max(self._eye_baseline, 1e-6)
+
+            if not self._blink_armed and drop >= self.blink_drop_ratio:
+                self._blink_armed = True
+            elif self._blink_armed and drop <= self.blink_drop_ratio * 0.35:
+                if self._cooldown_ok("blink", now):
+                    actions.append("blink")
+                self._blink_armed = False
+                self._eye_baseline = eye_open
+
         return actions

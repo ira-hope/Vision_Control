@@ -1,17 +1,20 @@
+"""
+Webcam smoke test — no face detection.
+
+Run:  python -m src.camera
+Quit: press q
+
+Use this first to confirm the camera opens (indices 0, 1, 2 are tried).
+"""
+
 import cv2
 
-def main():
-    cap = None
-    for _idx in (0, 1, 2):
-        _cap = cv2.VideoCapture(_idx)
-        if _cap.isOpened():
-            cap = _cap
-            print(f"Camera opened on index {_idx}.")
-            break
-        _cap.release()
+from .config import open_camera
 
-    if not cap:
-        raise RuntimeError("Camera not opened. Try changing index (0/1/2).")
+
+def main():
+    # Open first available camera index
+    cap = open_camera()
 
     print("Camera test. Press 'q' to quit.")
 
@@ -28,6 +31,7 @@ def main():
 
     cap.release()
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

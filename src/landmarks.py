@@ -1,18 +1,19 @@
-# src/landmarks.py
 """
-Minimal pipeline:
-camera -> Haar face box -> MediaPipe FaceMesh (full-frame) -> extract 5 keypoints -> draw
+Landmark visualization demo (educational).
 
-Run:
-python -m src.landmarks
+Pipeline: camera -> Haar boxes on all faces -> FaceMesh on full frame -> 5 keypoints
 
-Keys:
-q : quit
+Run:  python -m src.landmarks
+Quit: q
+
+Note: Production code uses haar_5pt.py (ROI-based mesh) for better accuracy.
 """
 
 import cv2
 import numpy as np
 import mediapipe as mp
+
+from .config import open_camera
 
 # 5-point indices (FaceMesh)
 IDX_LEFT_EYE = 33
@@ -39,16 +40,7 @@ def main():
         min_tracking_confidence=0.5,
     )
 
-    cap = None
-    for _idx in (0, 1, 2):
-        _cap = cv2.VideoCapture(_idx)
-        if _cap.isOpened():
-            cap = _cap
-            print(f"Camera opened on index {_idx}.")
-            break
-        _cap.release()
-    if cap is None:
-        raise RuntimeError("Camera not opened. Tried indices 0, 1, 2.")
+    cap = open_camera()
 
 
     print("Haar + FaceMesh 5pt (minimal). Press 'q' to quit.")

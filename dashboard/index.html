@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Face Locking Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --surface2: #243044;
+      --border: #2d3a4f;
+      --text: #e8edf4;
+      --muted: #8b9cb3;
+      --accent: #f5c542;
+      --locked: #f5c542;
+      --searching: #6b8afd;
+      --move: #4ecdc4;
+      --smile: #7ee787;
+      --lock-ev: #c9a227;
+      --unlock: #ff7b72;
+      --unknown: #8b9cb3;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 1.5rem;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle { color: var(--muted); font-size: 0.85rem; margin-top: 0.15rem; }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+    }
+
+    .pill .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+
+    .pill.live .dot { background: #3fb950; box-shadow: 0 0 8px #3fb950; }
+    .pill.offline .dot { background: #ff7b72; }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    @media (max-width: 700px) {
+      .hero { grid-template-columns: 1fr; }
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.35rem;
+    }
+
+    .card-label {
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .target-name {
+      font-size: 2.2rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.03em;
+      word-break: break-word;
+    }
+
+    .target-name.empty { color: var(--muted); font-size: 1.25rem; font-weight: 500; }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-top: 0.35rem;
+    }
+
+    .status-badge {
+      display: inline-block;
+      padding: 0.3rem 0.85rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .status-badge.locked {
+      background: rgba(245, 197, 66, 0.15);
+      color: var(--locked);
+      border: 1px solid rgba(245, 197, 66, 0.35);
+    }
+
+    .status-badge.searching {
+      background: rgba(107, 138, 253, 0.15);
+      color: var(--searching);
+      border: 1px solid rgba(107, 138, 253, 0.35);
+    }
+
+    .status-badge.idle {
+      background: rgba(139, 156, 179, 0.12);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .meta { color: var(--muted); font-size: 0.82rem; margin-top: 0.65rem; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 1rem;
+    }
+
+    @media (max-width: 900px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    .panel-title {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin-bottom: 0.85rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .count {
+      font-size: 0.75rem;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .movement-list {
+      list-style: none;
+      max-height: 420px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .movement-item {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.65rem 0.85rem;
+      background: var(--surface2);
+      border-radius: 8px;
+      border-left: 3px solid var(--move);
+      animation: fadeIn 0.25s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .movement-icon {
+      font-size: 1.25rem;
+      width: 2rem;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .movement-body { flex: 1; min-width: 0; }
+    .movement-action { font-weight: 600; text-transform: capitalize; }
+    .movement-time { font-size: 0.78rem; color: var(--muted); }
+
+    .empty-state {
+      text-align: center;
+      color: var(--muted);
+      padding: 2.5rem 1rem;
+      font-size: 0.9rem;
+    }
+
+    .log-table-wrap {
+      max-height: 420px;
+      overflow: auto;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: var(--surface2);
+      text-align: left;
+      padding: 0.6rem 0.75rem;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 0.55rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255, 255, 255, 0.03); }
+
+    .tag {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: capitalize;
+    }
+
+    .tag.move { background: rgba(78, 205, 196, 0.15); color: var(--move); }
+    .tag.smile { background: rgba(126, 231, 135, 0.15); color: var(--smile); }
+    .tag.blink { background: rgba(107, 138, 253, 0.15); color: var(--searching); }
+    .tag.locked { background: rgba(245, 197, 66, 0.15); color: var(--lock-ev); }
+    .tag.unlocked { background: rgba(255, 123, 114, 0.15); color: var(--unlock); }
+    .tag.other { background: rgba(139, 156, 179, 0.12); color: var(--muted); }
+
+    footer {
+      margin-top: 1.25rem;
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.75rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Face Locking Dashboard</h1>
+        <p class="subtitle">Live movements and events for the locked target</p>
+      </div>
+      <div id="connectionPill" class="pill offline">
+        <span class="dot"></span>
+        <span id="connectionText">Connecting…</span>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="card">
+        <div class="card-label">Target person</div>
+        <div id="targetName" class="target-name empty">Waiting for detect.py…</div>
+        <div class="meta" id="lockedPersonMeta">No active lock session</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Lock status</div>
+        <div class="status-row">
+          <span id="statusBadge" class="status-badge idle">Idle</span>
+        </div>
+        <div class="meta" id="lastAction">Last action: —</div>
+        <div class="meta" id="lastUpdate">Updated: —</div>
+      </div>
+    </section>
+
+    <section class="grid-2">
+      <div class="card">
+        <div class="panel-title">
+          <span>Movements</span>
+          <span class="count" id="movementCount">0 events</span>
+        </div>
+        <ul id="movementList" class="movement-list">
+          <li class="empty-state">No movements recorded yet</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="panel-title">
+          <span>Event log</span>
+          <span class="count" id="eventCount">0 events</span>
+        </div>
+        <div class="log-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Person</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="eventLogBody">
+              <tr><td colspan="3" class="empty-state">No events yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <footer>Auto-refreshes every second · Run <code>python -m src.detect</code> + <code>python -m src.dashboard</code></footer>
+  </div>
+
+  <script>
+    const POLL_MS = 1000;
+    let lastEventCount = 0;
+
+    function movementIcon(action) {
+      if (action.includes("left")) return "←";
+      if (action.includes("right")) return "→";
+      if (action.includes("up")) return "↑";
+      if (action.includes("down")) return "↓";
+      if (action === "smile") return "😊";
+      if (action === "blink") return "👁";
+      return "↔";
+    }
+
+    function actionTagClass(action) {
+      if (action.startsWith("moved")) return "move";
+      if (action === "smile") return "smile";
+      if (action === "blink") return "blink";
+      if (action === "LOCKED") return "locked";
+      if (action === "UNLOCKED") return "unlocked";
+      return "other";
+    }
+
+    function formatAction(action) {
+      if (action === "smile") return "Smile";
+      if (action === "blink") return "Blink";
+      return action.replace(/^moved /, "Moved ").replace(/\//g, " / ");
+    }
+
+    function setConnection(ok) {
+      const pill = document.getElementById("connectionPill");
+      const text = document.getElementById("connectionText");
+      pill.className = "pill " + (ok ? "live" : "offline");
+      text.textContent = ok ? "Live" : "Offline";
+    }
+
+    function renderStatus(status) {
+      const target = status.target_name || "";
+      const locked = status.locked_name || "";
+      const isLocked = !!status.is_locked;
+
+      const targetEl = document.getElementById("targetName");
+      if (target) {
+        targetEl.textContent = target;
+        targetEl.classList.remove("empty");
+      } else {
+        targetEl.textContent = "No target set";
+        targetEl.classList.add("empty");
+      }
+
+      const meta = document.getElementById("lockedPersonMeta");
+      if (isLocked && locked) {
+        meta.textContent = `Currently locked on: ${locked}`;
+      } else if (target) {
+        meta.textContent = `Searching for: ${target}`;
+      } else {
+        meta.textContent = "Start detect.py with --name to set a target";
+      }
+
+      const badge = document.getElementById("statusBadge");
+      if (isLocked) {
+        badge.textContent = "Locked";
+        badge.className = "status-badge locked";
+      } else if (target) {
+        badge.textContent = "Searching";
+        badge.className = "status-badge searching";
+      } else {
+        badge.textContent = "Idle";
+        badge.className = "status-badge idle";
+      }
+
+      document.getElementById("lastAction").textContent =
+        "Last action: " + (status.last_action || "—");
+      document.getElementById("lastUpdate").textContent =
+        "Updated: " + (status.updated_iso || "—");
+    }
+
+    function renderMovements(movements) {
+      const list = document.getElementById("movementList");
+      document.getElementById("movementCount").textContent =
+        movements.length + " event" + (movements.length === 1 ? "" : "s");
+
+      if (!movements.length) {
+        list.innerHTML = '<li class="empty-state">No movements recorded yet</li>';
+        return;
+      }
+
+      const recent = [...movements].reverse().slice(0, 50);
+      list.innerHTML = recent.map((ev) => `
+        <li class="movement-item">
+          <span class="movement-icon">${movementIcon(ev.action)}</span>
+          <div class="movement-body">
+            <div class="movement-action">${formatAction(ev.action)}</div>
+            <div class="movement-time">${ev.iso_time || ""} · ${ev.name || ""}</div>
+          </div>
+        </li>
+      `).join("");
+    }
+
+    function renderEvents(events) {
+      const tbody = document.getElementById("eventLogBody");
+      document.getElementById("eventCount").textContent =
+        events.length + " event" + (events.length === 1 ? "" : "s");
+
+      if (!events.length) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No events yet</td></tr>';
+        return;
+      }
+
+      const recent = [...events].reverse().slice(0, 100);
+      tbody.innerHTML = recent.map((ev) => {
+        const cls = actionTagClass(ev.action || "");
+        const label = formatAction(ev.action || "");
+        return `
+          <tr>
+            <td>${ev.iso_time || ""}</td>
+            <td>${ev.name || "—"}</td>
+            <td><span class="tag ${cls}">${label}</span></td>
+          </tr>
+        `;
+      }).join("");
+
+      if (events.length > lastEventCount) {
+        lastEventCount = events.length;
+      }
+    }
+
+    async function refresh() {
+      try {
+        const [statusRes, eventsRes, moveRes] = await Promise.all([
+          fetch("/api/status"),
+          fetch("/api/events?limit=200"),
+          fetch("/api/movements?limit=200"),
+        ]);
+
+        if (!statusRes.ok || !eventsRes.ok || !moveRes.ok) {
+          throw new Error("API error");
+        }
+
+        const status = await statusRes.json();
+        const events = (await eventsRes.json()).events || [];
+        const movements = (await moveRes.json()).movements || [];
+
+        setConnection(true);
+        renderStatus(status);
+        renderMovements(movements);
+        renderEvents(events);
+      } catch (err) {
+        setConnection(false);
+      }
+    }
+
+    refresh();
+    setInterval(refresh, POLL_MS);
+  </script>
+</body>
+</html>

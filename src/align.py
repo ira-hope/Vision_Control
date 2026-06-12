@@ -1,16 +1,11 @@
-# src/align.py
 """
-Alignment demo using your WORKING pipeline:
-- Haar face detection (fast)
-- MediaPipe FaceMesh -> 5 keypoints (stable)
-- ArcFace-style 5pt alignment -> 112x112 (or any size you set)
+Face alignment demo — warp face to ArcFace 112x112 template.
 
-Run:
-python -m src.align
+Shows two windows: camera with landmarks, and aligned output.
+Uses Haar5ptDetector (single largest face, EMA-smoothed).
 
-Keys:
-q quit
-s save current aligned face to data/debug_aligned/<timestamp>.jpg
+Run:  python -m src.align
+Keys: q quit | s save snapshot to data/debug_aligned/
 """
 
 from __future__ import annotations
@@ -22,13 +17,14 @@ from typing import Tuple
 import cv2
 import numpy as np
 
-# Import from your existing script
+from .config import open_camera, project_path
 from .haar_5pt import Haar5ptDetector, align_face_5pt
 
 
 
 
 def _put_text(img, text: str, xy=(10, 30), scale=0.8, thickness=2):
+    """Draw white overlay text on the camera preview."""
     cv2.putText(
         img,
         text,
@@ -42,17 +38,17 @@ def _put_text(img, text: str, xy=(10, 30), scale=0.8, thickness=2):
 
 
 def _safe_imshow(win: str, img: np.ndarray):
+    """cv2.imshow that skips None images."""
     if img is None:
         return
     cv2.imshow(win, img)
 
 
 def main(
-    cam_index: int = 0,
     out_size: Tuple[int, int] = (112, 112),
     mirror: bool = True,
 ):
-    cap = cv2.VideoCapture(cam_index)
+    cap = open_camera()
 
     det = Haar5ptDetector(
         min_size=(70, 70),
@@ -64,7 +60,7 @@ def main(
     blank = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
     # Where to save aligned snapshots
-    save_dir = Path("data/debug_aligned")
+    save_dir = project_path("data", "debug_aligned")
     save_dir.mkdir(parents=True, exist_ok=True)
 
     last_aligned = blank.copy()

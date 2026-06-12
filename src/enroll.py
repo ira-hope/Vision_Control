@@ -1,7 +1,15 @@
-# src/enroll.py
 """
-Enrollment tool using your working pipeline:
-camera -> Haar detection -> FaceMesh 5pt -> align_face_5pt (112x112) -> ArcFace embedding
+Face enrollment — build data/db/face_db.npz from live camera samples.
+
+Pipeline: camera -> Haar5ptDetector -> align 112x112 -> ArcFace embedding
+
+Run:  python -m src.enroll
+Keys: SPACE capture | a auto-capture | s save to DB | r reset new samples | q quit
+
+Output:
+  data/enroll/<name>/*.jpg   aligned crop images
+  data/db/face_db.npz        mean embedding per person
+  data/db/face_db.json       metadata
 """
 
 from __future__ import annotations
@@ -14,8 +22,9 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .haar_5pt import Haar5ptDetector, align_face_5pt
+from .config import DB_JSON_PATH, DB_PATH, ENROLL_DIR, open_camera
 from .embed import ArcFaceEmbedderONNX
+from .haar_5pt import Haar5ptDetector, align_face_5pt
 
 
 # -------------------------
@@ -23,10 +32,10 @@ from .embed import ArcFaceEmbedderONNX
 # -------------------------
 @dataclass
 class EnrollConfig:
-    out_db_npz: Path = Path("data/db/face_db.npz")
-    out_db_json: Path = Path("data/db/face_db.json")
+    out_db_npz: Path = DB_PATH
+    out_db_json: Path = DB_JSON_PATH
     save_crops: bool = True
-    crops_dir: Path = Path("data/enroll")
+    crops_dir: Path = ENROLL_DIR
     samples_needed: int = 15
     auto_capture_every_s: float = 0.25
     max_existing_crops: int = 300
@@ -144,7 +153,7 @@ def draw_status(
 
 
 # -------------------------
-# Main
+# Main enrollment loop
 # -------------------------
 def main():
     cfg = EnrollConfig()
@@ -174,16 +183,7 @@ def main():
     auto = False
     last_auto = 0.0
 
-    cap = None
-    for _idx in (0, 1, 2):
-        _cap = cv2.VideoCapture(_idx)
-        if _cap.isOpened():
-            cap = _cap
-            print(f"Camera opened on index {_idx}.")
-            break
-        _cap.release()
-    if cap is None:
-        raise RuntimeError("Failed to open camera. Tried indices 0, 1, 2.")
+    cap = open_camera()
 
     cv2.namedWindow(cfg.window_main, cv2.WINDOW_NORMAL)
     cv2.namedWindow(cfg.window_aligned, cv2.WINDOW_NORMAL)
