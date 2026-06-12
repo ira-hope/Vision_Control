@@ -16,6 +16,8 @@ def write_lock_state(
     locked_name: str | None = None,
     is_locked: bool = False,
     last_action: str = "",
+    confidence: float | None = None,
+    motor_command: str = "",
 ) -> None:
     """Persist current lock status for the HTML dashboard."""
     LOCK_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -24,9 +26,12 @@ def write_lock_state(
         "locked_name": locked_name,
         "is_locked": is_locked,
         "last_action": last_action,
+        "motor_command": motor_command,
         "updated_at": time.time(),
         "updated_iso": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if confidence is not None:
+        state["confidence"] = round(float(confidence), 4)
     LOCK_STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
@@ -38,6 +43,8 @@ def read_lock_state() -> dict[str, Any]:
             "locked_name": None,
             "is_locked": False,
             "last_action": "",
+            "motor_command": "",
+            "confidence": None,
             "updated_at": 0,
             "updated_iso": "",
         }
@@ -49,6 +56,8 @@ def read_lock_state() -> dict[str, Any]:
             "locked_name": None,
             "is_locked": False,
             "last_action": "",
+            "motor_command": "",
+            "confidence": None,
             "updated_at": 0,
             "updated_iso": "",
         }

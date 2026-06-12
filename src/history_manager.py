@@ -4,12 +4,13 @@ JSONL event logger for face locking actions.
 Writes one JSON object per line to data/history/history_log.jsonl.
 Used by detect.py to record LOCKED, moved left/right, smile, etc.
 
-Each event: { timestamp, iso_time, name, action }
+Each event: { timestamp, iso_time, name, action, confidence?, motor_command? }
 """
 
 import json
 import time
 from pathlib import Path
+from typing import Optional
 
 from .config import HISTORY_DIR, HISTORY_LOG_PATH
 
@@ -23,7 +24,14 @@ class HistoryManager:
         self.log_file = self.log_dir / "history_log.jsonl"
         self.buffer = []  # in-memory copy for get_recent_events()
 
-    def log_event(self, name: str, action: str):
+    def log_event(
+        self,
+        name: str,
+        action: str,
+        *,
+        confidence: Optional[float] = None,
+        motor_command: Optional[str] = None,
+    ):
         """Log a new event with current timestamp and flush to disk immediately."""
         event = {
             "timestamp": time.time(),
@@ -31,10 +39,28 @@ class HistoryManager:
             "name": name,
             "action": action,
         }
+        if confidence is not None:
+            event["confidence"] = round(float(confidence), 4)
+        if motor_command:
+            event["motor_command"] = motor_command
         self.buffer.append(event)
 
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
+
+    def log_tracking(
+        self,
+        speaker_id: str,
+        confidence: float,
+        motor_command: str,
+    ) -> None:
+        """Log recognition + motor command for assessment evidence."""
+        self.log_event(
+            speaker_id,
+            "TRACKING",
+            confidence=confidence,
+            motor_command=motor_command,
+        )
 
     def get_recent_events(self, limit: int = 10):
         """Return the last N events from the in-memory buffer."""

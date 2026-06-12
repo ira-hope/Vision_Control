@@ -1,16 +1,62 @@
-# Face Recognition & Face Locking System (Windows)
+# AI-Powered Single-Speaker Face Recognition & Camera Tracking System
 
-A **real-time face recognition and face locking system** that runs on **Windows + Python 3.12**.
+**BENAX Technologies Ltd** — integrated assessment project combining machine learning, computer vision, networking, embedded systems, and motor control.
 
-Pipeline: **Camera → Haar detection → FaceMesh 5-point landmarks → Face alignment (112×112) → ArcFace embedding**
+Unlike conventional face tracking that follows any detected face, this system **locks onto one pre-enrolled speaker identity** and continues tracking that individual even when other faces appear (audience, assistants, co-presenters).
 
-Key capabilities:
-- Detect and recognize multiple faces simultaneously
-- **Lock onto a specific target face** with identity-based tracking + spatial fallback
-- Detect actions on the locked face (head movement, smile)
-- Log all events to a `.jsonl` history file
-- **Live HTML dashboard** — lock status, movements, and event log in the browser
-- Control a **servo motor** via **MQTT over ESP8266** — the servo tracks the locked face's horizontal position
+Runs on **Windows + Python 3.10+** (tested on 3.12).
+
+## System overview
+
+| Layer | Role |
+|-------|------|
+| **PC (Python)** | Camera capture, face detection, single-identity recognition, tracking, MQTT command generation |
+| **MQTT / Wi-Fi** | Continuous motor commands to the embedded controller |
+| **ESP8266** | MQTT subscriber → servo PWM on **D5 (GPIO14)** |
+| **Servo + mount** | Horizontal camera pan to keep the speaker centred |
+
+### Assessment features
+
+- **Face enrollment** — 10–30 images → single ArcFace embedding template (`python -m src.enroll`)
+- **Speaker lock** — recognise only the enrolled speaker; ignore all other faces
+- **Tracking & motor control** — horizontal error → `MOVED_LEFT`, `MOVED_RIGHT`, `CENTERED`, `STOPPED`, `OUT_OF_FRAME`, `SCAN`
+- **Re-acquisition** — `SCAN` sweep when the speaker is occluded or leaves the frame
+- **Evidence logging** — speaker ID, confidence, timestamps, motor commands → `data/history/history_log.jsonl`
+- **Live HTML dashboard** *(innovation)* — real-time lock status, confidence, motor commands, and event log in the browser
+
+### Recognise → Track → Command pipeline
+
+```mermaid
+flowchart LR
+    A[USB Camera] --> B[Face Detection]
+    B --> C[ArcFace Embedding]
+    C --> D{Matches enrolled speaker?}
+    D -->|No| E[Ignore other faces]
+    D -->|Yes| F[Track bounding box]
+    F --> G[Horizontal error vs frame centre]
+    G --> H{Deadband}
+    H -->|In range| I[CENTERED / STOPPED]
+    H -->|Left| J[MOVED_LEFT]
+    H -->|Right| K[MOVED_RIGHT]
+    F -->|Lost / occluded| L[OUT_OF_FRAME → SCAN]
+    I & J & K & L --> M[MQTT publish]
+    M --> N[ESP8266 + Servo D5]
+    M --> O[JSONL log + Dashboard]
+```
+
+Pipeline detail: **Camera → FaceMesh → align 112×112 → ArcFace embedding → speaker match → horizontal tracking error → MQTT motor command**
+
+### Assessment activity mapping
+
+| Assessment activity | Implementation |
+|---------------------|----------------|
+| **a) Speaker face enrollment** (10–30 images, embedding template) | `python -m src.enroll` → `data/enroll/`, `data/db/face_db.npz` |
+| **b) Single-identity recognition (speaker lock)** | `faceLockServo.py` — match enrolled speaker only; other faces drawn but ignored for motor control |
+| **c) Face tracking & command generation** | `motion_control.py` — horizontal error → `MOVED_LEFT` / `MOVED_RIGHT` / `CENTERED` + deadband smoothing |
+| **d) MQTT embedded motor control** | `faceLockServo.py` (paho-mqtt publisher) + `servo_controller.ino` (ESP8266 subscriber, **D5 / GPIO14**) |
+| **e) Validation & evidence logging** | `history_manager.py` → `data/history/history_log.jsonl` (speaker ID, confidence, timestamp, motor command) |
+| **Re-acquisition (occlusion)** | `OUT_OF_FRAME` logged → `SCAN` sweep until same enrolled speaker re-appears |
+| **Live dashboard (innovation)** | `python -m src.dashboard` — browser view of lock status and event log |
 
 ---
 
@@ -44,7 +90,8 @@ Facelocking2/
 │   ├── dashboard.py             # HTTP server for live HTML dashboard
 │   ├── lock_state.py            # Lock status file read/write for dashboard
 │   ├── enroll.py                # Face enrollment tool
-│   ├── faceLockServo.py         # Face locking + MQTT servo control
+│   ├── faceLockServo.py         # Speaker lock + MQTT motor commands
+│   ├── motion_control.py        # Tracking error → motor command mapping
 │   ├── haar_5pt.py              # Haar + MediaPipe FaceMesh detector
 │   ├── align.py                 # 5-point face alignment
 │   ├── embed.py                 # ArcFace ONNX embedder
@@ -157,7 +204,7 @@ python -m src.enroll
 | `r` | Reset new samples (keep existing) |
 | `q` | Quit |
 
-- Needs **15 samples** by default (`EnrollConfig.samples_needed`)
+- Needs **10–30 samples** (default target: 15; see `ENROLL_SAMPLES_*` in `src/config.py`)
 - Saves aligned 112×112 crops to `data/enroll/<name>/`
 - Stores the mean ArcFace embedding in `data/db/face_db.npz`
 
@@ -229,20 +276,24 @@ Data is read from `data/history/history_log.jsonl` and `data/history/lock_state.
 
 ---
 
-## 🎯 Step 3 (Optional) — Run with Servo Control (faceLockServo.py)
+## 🎯 Step 3 — Run with MQTT Motor Control (faceLockServo.py)
+
+Primary assessment demo — single-speaker lock + servo tracking:
 
 ```powershell
 python -m src.faceLockServo
 ```
 
-- Prompts you to choose a target identity from the enrolled DB
-- Locks face and publishes **servo angles (0–180°)** to MQTT topic `TeAmSiX/facelocking/servo_ctrl_x9z`
-- Logs **LOCKED**, head movements, **smile**, and **blink** to the same history files as `detect.py` (works with the dashboard)
-- MQTT Broker: `157.173.101.159:1883`
-- Uses **MediaPipe FaceMesh** (full 468 landmarks) for detection in this mode
-- Servo angle is smoothed and rate-limited (deadzone: 5°, interval: 100 ms)
+- Prompts for the enrolled speaker identity
+- Publishes motor commands to MQTT topic `TeAmSiX/facelocking/servo_ctrl_x9z`
+- Commands (assessment vocabulary): `MOVED_LEFT`, `MOVED_RIGHT`, `CENTERED`, `STOPPED`, `OUT_OF_FRAME`, `SCAN`
+- Horizontal error = face centre − frame centre; deadband/hysteresis → `CENTERED`; publishes **every frame** via MQTT
+- Logs speaker ID, **confidence**, timestamps, and motor commands to `history_log.jsonl`
+- MQTT broker: `157.173.101.159:1883` (configure in `src/config.py`)
+- Uses **MediaPipe FaceMesh** for detection + **ArcFace** embeddings for single-speaker lock
+- Yellow vertical line on preview = frame centre (tracking reference)
 
-Run the dashboard in a second terminal while `faceLockServo` is active:
+Run the **dashboard** (innovation) in a second terminal:
 
 ```powershell
 python -m src.dashboard
@@ -254,11 +305,12 @@ python -m src.dashboard
 
 File: `src/servo_controller/servo_controller.ino`
 
-- Connects to WiFi: `Main Hall`
+- WiFi: configure `ssid` / `password` in the sketch
 - Subscribes to MQTT topic: `TeAmSiX/facelocking/servo_ctrl_x9z`
-- Servo on pin `D1`, range 0–180°
-- **Search mode**: if no MQTT message arrives for **1500 ms**, the servo sweeps back and forth automatically
-- Smooth movement: increments target angle by 1° per `loop()` tick (15 ms delay)
+- Servo on pin **D5 (GPIO14)**; VIN + GND power the motor
+- Interprets `MOVED_LEFT`, `MOVED_RIGHT`, `CENTERED`, `STOPPED`, `SCAN`, `OUT_OF_FRAME` (plus legacy numeric `0`–`180`)
+- **MOVE_LEFT** / **MOVE_RIGHT**: 1° steps; **SCAN**: 2° sweep 0° → 180° → 0°
+- **SCAN fallback**: if no MQTT message for **1500 ms**, servo enters search sweep automatically
 
 **Dependencies (Arduino Library Manager):**
 - `ESP8266WiFi`
@@ -316,10 +368,12 @@ Or edit thresholds and paths in `src/config.py`.
 
 ---
 
-## 🚀 Possible Extensions
+## Validation scenarios (assessment)
 
-- FAISS approximate nearest-neighbour search for large DBs
-- Full blink detection (requires 68-point or FaceMesh EAR landmarks)
-- WebSocket push instead of polling for the dashboard
-- Multi-target locking
-- Cloud/database event logging
+Demonstrate correct behaviour when:
+
+1. **Other faces appear** — only the enrolled speaker is tracked; others shown but ignored for motor control
+2. **Speaker occluded** — `OUT_OF_FRAME` + `SCAN` re-acquisition sweep
+3. **Speaker moves across frame** — continuous `MOVED_LEFT` / `MOVED_RIGHT` until `CENTERED`
+
+Evidence: `data/history/history_log.jsonl` and the live dashboard at http://127.0.0.1:8765

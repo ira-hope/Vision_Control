@@ -22,7 +22,15 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .config import DB_JSON_PATH, DB_PATH, ENROLL_DIR, open_camera
+from .config import (
+    DB_JSON_PATH,
+    DB_PATH,
+    ENROLL_DIR,
+    ENROLL_SAMPLES_DEFAULT,
+    ENROLL_SAMPLES_MAX,
+    ENROLL_SAMPLES_MIN,
+    open_camera,
+)
 from .embed import ArcFaceEmbedderONNX
 from .haar_5pt import Haar5ptDetector, align_face_5pt
 
@@ -36,7 +44,9 @@ class EnrollConfig:
     out_db_json: Path = DB_JSON_PATH
     save_crops: bool = True
     crops_dir: Path = ENROLL_DIR
-    samples_needed: int = 15
+    samples_needed: int = ENROLL_SAMPLES_DEFAULT
+    samples_min: int = ENROLL_SAMPLES_MIN
+    samples_max: int = ENROLL_SAMPLES_MAX
     auto_capture_every_s: float = 0.25
     max_existing_crops: int = 300
 
@@ -133,7 +143,7 @@ def draw_status(
     total = base_count + new_count
     lines = [
         f"ENROLL: {name}",
-        f"Existing: {base_count} | New: {new_count} | Total: {total} / {needed}",
+        f"Existing: {base_count} | New: {new_count} | Total: {total} (need {needed}, min 10, max 30)",
         f"Auto: {'ON' if auto else 'OFF'} (toggle: a)",
         "SPACE=capture | s=save | r=reset NEW | q=quit",
     ]
@@ -248,6 +258,15 @@ def main():
 
             if key == ord("s"):
                 all_samples = base_samples + new_samples
+                if len(all_samples) < cfg.samples_min:
+                    status_msg = (
+                        f"Need at least {cfg.samples_min} samples "
+                        f"(have {len(all_samples)})"
+                    )
+                    continue
+                if len(all_samples) > cfg.samples_max:
+                    all_samples = all_samples[: cfg.samples_max]
+                    status_msg = f"Using first {cfg.samples_max} samples"
                 template = mean_embedding(all_samples)
                 db[name] = template
 

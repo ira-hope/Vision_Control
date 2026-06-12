@@ -282,7 +282,7 @@
     <header>
       <div>
         <h1>Face Locking Dashboard</h1>
-        <p class="subtitle">Live movements and events for the locked target</p>
+        <p class="subtitle">BENAX speaker lock — live motor commands &amp; evidence log</p>
       </div>
       <div id="connectionPill" class="pill offline">
         <span class="dot"></span>
@@ -302,6 +302,8 @@
           <span id="statusBadge" class="status-badge idle">Idle</span>
         </div>
         <div class="meta" id="lastAction">Last action: —</div>
+        <div class="meta" id="motorCmd">Motor command: —</div>
+        <div class="meta" id="confidence">Confidence: —</div>
         <div class="meta" id="lastUpdate">Updated: —</div>
       </div>
     </section>
@@ -329,17 +331,19 @@
                 <th>Time</th>
                 <th>Person</th>
                 <th>Action</th>
+                <th>Conf.</th>
+                <th>Motor</th>
               </tr>
             </thead>
             <tbody id="eventLogBody">
-              <tr><td colspan="3" class="empty-state">No events yet</td></tr>
+              <tr><td colspan="5" class="empty-state">No events yet</td></tr>
             </tbody>
           </table>
         </div>
       </div>
     </section>
 
-    <footer>Auto-refreshes every second · Run <code>python -m src.detect</code> + <code>python -m src.dashboard</code></footer>
+    <footer>Auto-refreshes every second · Run <code>python -m src.faceLockServo</code> + <code>python -m src.dashboard</code></footer>
   </div>
 
   <script>
@@ -415,6 +419,11 @@
 
       document.getElementById("lastAction").textContent =
         "Last action: " + (status.last_action || "—");
+      document.getElementById("motorCmd").textContent =
+        "Motor command: " + (status.motor_command || "—");
+      const conf = status.confidence;
+      document.getElementById("confidence").textContent =
+        "Confidence: " + (conf != null && conf !== "" ? Number(conf).toFixed(2) : "—");
       document.getElementById("lastUpdate").textContent =
         "Updated: " + (status.updated_iso || "—");
     }
@@ -455,11 +464,15 @@
       tbody.innerHTML = recent.map((ev) => {
         const cls = actionTagClass(ev.action || "");
         const label = formatAction(ev.action || "");
+        const conf = ev.confidence != null ? Number(ev.confidence).toFixed(2) : "—";
+        const motor = ev.motor_command || "—";
         return `
           <tr>
             <td>${ev.iso_time || ""}</td>
             <td>${ev.name || "—"}</td>
             <td><span class="tag ${cls}">${label}</span></td>
+            <td>${conf}</td>
+            <td>${motor}</td>
           </tr>
         `;
       }).join("");
